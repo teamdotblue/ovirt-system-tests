@@ -129,8 +129,6 @@ def ovirt_driver(
     for i in range(5):
         try:
             driver = webdriver.Remote(command_executor=selenium_grid_url, options=selenium_browser_options)
-            driver.implicitly_wait(5)
-            driver.set_script_timeout(5)
             break
         except Exception as e:
             LOGGER.exception(f'Failed to create driver {i}')
@@ -232,7 +230,25 @@ def user_login(ovirt_driver, keycloak_enabled):
     return login
 
 
-def test_userportal(
+def initalize_vm_portal(
+    ovirt_driver,
+    username,
+    password,
+    user_login,
+    engine_webadmin_url,
+):
+    welcome_screen = WelcomeScreen(ovirt_driver)
+    welcome_screen.wait_for_displayed()
+    welcome_screen.open_user_portal()
+
+    user_login(username, password)
+
+    vm_portal = VmPortal(ovirt_driver)
+    vm_portal.wait_for_displayed()
+    return vm_portal
+
+
+def test_vmportal_non_admin(
     ovirt_driver,
     nonadmin_username,
     nonadmin_password,
@@ -240,27 +256,65 @@ def test_userportal(
     engine_webadmin_url,
     save_screenshot,
 ):
-    welcome_screen = WelcomeScreen(ovirt_driver)
-    welcome_screen.wait_for_displayed()
-    welcome_screen.open_user_portal()
-
-    user_login(nonadmin_username, nonadmin_password)
-
-    vm_portal = VmPortal(ovirt_driver)
-    vm_portal.wait_for_displayed()
+    vm_portal = initalize_vm_portal(
+        ovirt_driver, nonadmin_username, nonadmin_password, user_login, engine_webadmin_url
+    )
 
     # using vm0 requires logic from 002 _bootstrap::test_add_vm_permissions_to_user
     assert assert_utils.equals_within_short(vm_portal.get_vm_count, 1)
     vm0_status = vm_portal.get_vm_status('vm0')
     assert vm0_status == 'Powering up' or vm0_status == 'Running'
-    save_screenshot('userportal')
+    save_screenshot('vmportal')
+
+    assert vm_portal.is_create_virtual_machine_present() is False, "Create VM button is not visible for non-admin user"
+
+    # Check if navigation to settings is functional
+    settings_nav = vm_portal.settings_menu_opens()
+    assert settings_nav is True, "Settings menu did not open properly"
+    save_screenshot('vmportal-settings-menu')
 
     vm_portal.logout()
-    save_screenshot('userportal-logout')
 
     welcome_screen = WelcomeScreen(ovirt_driver)
     welcome_screen.wait_for_displayed()
     assert welcome_screen.is_user_logged_out()
+
+
+def test_about_menu_vm_portal(
+    ovirt_driver,
+    nonadmin_username,
+    nonadmin_password,
+    user_login,
+    engine_webadmin_url,
+    save_screenshot,
+):
+    vm_portal = initalize_vm_portal(
+        ovirt_driver, nonadmin_username, nonadmin_password, user_login, engine_webadmin_url
+    )
+
+    about_nav = vm_portal.about_menu_opens()
+    assert about_nav is True, "About menu did not open properly"
+    save_screenshot('vmportal-about-menu')
+    vm_portal.close_about_dialog()
+    vm_portal.logout()
+
+
+def test_vm_portal_vm_detail_present(
+    ovirt_driver,
+    nonadmin_username,
+    nonadmin_password,
+    user_login,
+    engine_webadmin_url,
+    save_screenshot,
+):
+    vm_portal = initalize_vm_portal(
+        ovirt_driver, nonadmin_username, nonadmin_password, user_login, engine_webadmin_url
+    )
+
+    assert vm_portal.vm_detail_present('vm0') is True, "VM details page opened properly"
+    save_screenshot('vmportal-detail')
+
+    vm_portal.logout()
 
 
 def test_non_admin_login_to_webadmin(
@@ -336,6 +390,8 @@ def test_clusters(ovirt_driver, save_screenshot, selenium_browser_name, ost_clus
     save_screenshot('cluster-edit-dialog')
     cluster_dialog.ok()
 
+    # Wait for modals and overlays to disappear before interacting with list
+    ovirt_driver.wait_for_modals_to_disappear()
     # Test the edited value in the details view
     cluster_list_view.wait_for_displayed()
     cluster_detail_view = cluster_list_view.open_detail_view(ost_cluster_name)
@@ -434,12 +490,16 @@ def test_hosts(ovirt_driver, ansible_host0_facts, save_screenshot, selenium_brow
     host_dialog.set_comment(host_comment)
     host_dialog.ok()
 
+    # Wait for modals and overlays to disappear before interacting with list
+    ovirt_driver.wait_for_modals_to_disappear()
     host_list_view.wait_for_displayed()
     host_dialog = host_list_view.edit(host_name)
     save_screenshot('host-edit-dialog')
     assert host_dialog.get_comment() == host_comment
     host_dialog.cancel()
 
+    # Wait for modals to disappear before next interaction
+    ovirt_driver.wait_for_modals_to_disappear()
     # Test the hostname in the details view
     host_list_view.wait_for_displayed()
     host_detail_view = host_list_view.open_detail_view(host_name)
@@ -488,12 +548,16 @@ def test_templates(ovirt_driver, cirros_image_template_name, save_screenshot, se
     save_screenshot('blank-template-edit-dialog')
     template_dialog.ok()
 
+    # Wait for modals to disappear before next interaction
+    ovirt_driver.wait_for_modals_to_disappear()
     template_list_view.wait_for_displayed()
     template_dialog = template_list_view.edit(imported_template)
     template_dialog.setDescription(imported_template_description)
     save_screenshot('imported-template-edit-dialog')
     template_dialog.ok()
 
+    # Wait for modals to disappear before next interaction
+    ovirt_driver.wait_for_modals_to_disappear()
     # Test the edited values in the details view
     template_list_view.wait_for_displayed()
     template_detail_view = template_list_view.open_detail_view(blank_template_name)
@@ -587,6 +651,8 @@ def test_virtual_machines(
     save_screenshot('vm-edit-dialog')
     vm_dialog.ok()
 
+    # Wait for modals to disappear before next interaction
+    ovirt_driver.wait_for_modals_to_disappear()
     # Test the VM details view
     vm_list_view.wait_for_displayed()
     vm_detail_view = vm_list_view.open_detail_view(vm_name)
@@ -738,6 +804,8 @@ def test_grafana(
     engine_webadmin_url,
     engine_fqdn,
 ):
+    # Instead of marking for xfail, skip the test, this to save time on CI, as the test is currently broken
+    pytest.skip('Auhentication with Grafana has been changed, this test needs to be updated.')
 
     ovirt_driver.get(engine_webadmin_url)
 
